@@ -1,153 +1,88 @@
 """
-Watchlist Engine — 3-ступенчатый отбор монет.
+Watchlist Engine v2.1
 
-Шаг 1: Ликвидность (объём, исключение мусора)
-Шаг 2: Momentum Score (изменение цены, объём vs среднее, RS vs BTC)
-Шаг 3: OI + Funding Score (структура участников)
+Теперь работает поверх Market Scanner:
+Market Scanner (топ-50) → Watchlist Engine (топ-10)
 
-Возвращает Active Universe — топ-10 монет для глубокого анализа.
+Шаг 1: Получаем топ-50 от Market Scanner (Trend + RS 7d)
+Шаг 2: Momentum Score (24h изменение, объём, позиция в диапазоне)
+Шаг 3: OI + Funding Score
+Шаг 4: Финальный рейтинг → топ-10 Active Universe
 """
 
 import logging
 import time
-import pandas as pd
 import numpy as np
+import binance_client as bc
 from config import (
     EXCLUDED_SYMBOLS, MIN_VOLUME_24H_USD,
     TOP_BY_MOMENTUM, ACTIVE_UNIVERSE_SIZE
 )
-import binance_client as bc
 
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────
-# ШАГ 1: ФИЛЬТР ЛИКВИДНОСТИ
-# ─────────────────────────────────────────
-
-def filter_by_liquidity(tickers: list[dict]) -> list[dict]:
-    """
-    Из всех фьючерсов отбираем только ликвидные.
-    Убираем стейблы, малый объём, мусорные монеты.
-    """
-    filtered = []
-    for t in tickers:
-        symbol = t.get("symbol", "")
-
-        # Только USDT пары
-        if not symbol.endswith("USDT"):
-            continue
-
-        # Убираем исключённые
-        base = symbol.replace("USDT", "")
-        if any(excl in base for excl in EXCLUDED_SYMBOLS):
-            continue
-
-        volume_24h = float(t.get("quoteVolume", 0))
-        if volume_24h < MIN_VOLUME_24H_USD:
-            continue
-
-        filtered.append({
-            "symbol": symbol,
-            "base": base,
-            "price": float(t.get("lastPrice", 0)),
-            "change_24h": float(t.get("priceChangePercent", 0)),
-            "volume_24h": volume_24h,
-            "high_24h": float(t.get("highPrice", 0)),
-            "low_24h": float(t.get("lowPrice", 0)),
-        })
-
-    logger.info(f"[Watchlist] После фильтра ликвидности: {len(filtered)} монет")
-    return filtered
-
-
-# ─────────────────────────────────────────
-# ШАГ 2: MOMENTUM SCORE
-# ─────────────────────────────────────────
-
 def score_momentum(coins: list[dict], btc_change_24h: float) -> list[dict]:
-    """
-    Считаем Momentum Score для каждой монеты.
-
-    Компоненты:
-    - Изменение за 24ч (абсолютное)
-    - Relative Strength vs BTC
-    - Объём аномалия (volume vs median по выборке)
-    - Позиция цены в диапазоне 24ч (сила тренда)
-    """
+    """Momentum Score с учётом 7d RS."""
     if not coins:
         return []
 
-    # Считаем медианный объём по выборке для нормализации
-    volumes = [c["volume_24h"] for c in coins]
-    median_vol = np.median(volumes)
+    volumes   = [c["volume_24h"] for c in coins]
+    median_vol = float(np.median(volumes)) if volumes else 1
 
     scored = []
     for coin in coins:
         score = 0.0
 
-        # 1. Изменение цены за 24ч (0-40 баллов)
         change = coin["change_24h"]
-        if change > 15:
-            score += 40
-        elif change > 10:
-            score += 35
-        elif change > 7:
-            score += 30
-        elif change > 5:
-            score += 25
-        elif change > 3:
-            score += 15
-        elif change > 0:
-            score += 5
-        # отрицательное изменение = 0 баллов
 
-        # 2. Relative Strength vs BTC (0-30 баллов)
-        # RS > 1 = монета сильнее BTC
+        # 1. Изменение цены за 24ч (0-30 баллов)
+        if change > 15:   score += 30
+        elif change > 10: score += 25
+        elif change > 7:  score += 20
+        elif change > 5:  score += 15
+        elif change > 3:  score += 8
+        elif change > 0:  score += 3
+
+        # 2. RS 1d vs BTC (0-25 баллов)
         if btc_change_24h != 0:
-            rs = change / abs(btc_change_24h) if btc_change_24h != 0 else 0
+            rs1d = change / abs(btc_change_24h)
         else:
-            rs = 1.0
+            rs1d = 1.0
 
-        if rs > 3:
-            score += 30
-        elif rs > 2:
-            score += 25
-        elif rs > 1.5:
-            score += 20
-        elif rs > 1:
-            score += 15
-        elif rs > 0:
-            score += 5
+        if rs1d > 3:   score += 25
+        elif rs1d > 2: score += 20
+        elif rs1d > 1.5: score += 15
+        elif rs1d > 1: score += 10
+        elif rs1d > 0: score += 4
 
-        # 3. Volume аномалия (0-20 баллов)
+        # 3. RS 7d vs BTC (0-25 баллов) — НОВОЕ
+        rs7d = coin.get("rs_7d", 0)
+        if rs7d > 3:   score += 25
+        elif rs7d > 2: score += 20
+        elif rs7d > 1.5: score += 15
+        elif rs7d > 1: score += 10
+        elif rs7d > 0: score += 4
+
+        # 4. Volume аномалия (0-15 баллов)
         vol_ratio = coin["volume_24h"] / median_vol if median_vol > 0 else 1
-        if vol_ratio > 5:
-            score += 20
-        elif vol_ratio > 3:
-            score += 16
-        elif vol_ratio > 2:
-            score += 12
-        elif vol_ratio > 1.5:
-            score += 8
-        elif vol_ratio > 1:
-            score += 4
+        if vol_ratio > 5:   score += 15
+        elif vol_ratio > 3: score += 12
+        elif vol_ratio > 2: score += 8
+        elif vol_ratio > 1.5: score += 5
+        elif vol_ratio > 1: score += 2
 
-        # 4. Позиция в диапазоне 24ч (0-10 баллов)
-        # Цена ближе к хаю = сила
-        high = coin["high_24h"]
-        low = coin["low_24h"]
-        price = coin["price"]
-        if high > low:
-            position = (price - low) / (high - low)
-            score += position * 10
+        # 5. Trend Score бонус (0-5 баллов) — НОВОЕ
+        trend_score = coin.get("trend_score", 50)
+        if trend_score > 75:  score += 5
+        elif trend_score > 60: score += 2
+        elif trend_score < 35: score -= 5
 
         coin["momentum_score"] = round(score, 2)
-        coin["rs_vs_btc"] = round(rs, 2)
-        coin["vol_ratio"] = round(vol_ratio, 2)
+        coin["rs_vs_btc"]      = round(rs1d, 2)
+        coin["vol_ratio"]      = round(vol_ratio, 2)
         scored.append(coin)
 
-    # Сортируем по score, берём топ
     scored.sort(key=lambda x: x["momentum_score"], reverse=True)
     top = scored[:TOP_BY_MOMENTUM]
 
@@ -158,98 +93,62 @@ def score_momentum(coins: list[dict], btc_change_24h: float) -> list[dict]:
     return top
 
 
-# ─────────────────────────────────────────
-# ШАГ 3: OI + FUNDING SCORE
-# ─────────────────────────────────────────
-
 def score_oi_funding(coins: list[dict]) -> list[dict]:
-    """
-    Для топ-30 монет получаем OI историю и Funding.
-    Оцениваем структуру участников.
-
-    Price ↑ + OI ↑ = реальный спрос (LONG friendly)
-    Price ↑ + OI ↓ = закрытие шортов (слабее)
-    Funding аномально высокий = рынок перегрет (осторожно)
-    """
+    """OI + Funding Score."""
     scored = []
 
     for coin in coins:
-        symbol = coin["symbol"]
-        oi_score = 50.0   # нейтральный старт
+        symbol     = coin["symbol"]
+        oi_score   = 50.0
         funding_score = 50.0
 
         try:
-            # OI история за последние 8 часов
             oi_hist = bc.get_open_interest_history(symbol, period="1h", limit=8)
             if oi_hist is not None and len(oi_hist) >= 3:
-                oi_values = oi_hist["sumOpenInterestValue"].values
-                oi_change = (oi_values[-1] - oi_values[0]) / oi_values[0] * 100
-
+                oi_vals    = oi_hist["sumOpenInterestValue"].values
+                oi_change  = (oi_vals[-1] - oi_vals[0]) / oi_vals[0] * 100
                 price_change = coin["change_24h"]
 
-                # Price ↑ OI ↑ = сильный сигнал
-                if price_change > 0 and oi_change > 5:
-                    oi_score = 85
-                elif price_change > 0 and oi_change > 2:
-                    oi_score = 75
-                elif price_change > 0 and oi_change > 0:
-                    oi_score = 65
-                elif price_change > 0 and oi_change < 0:
-                    # закрытие шортов — менее убедительный рост
-                    oi_score = 45
-                elif price_change < 0 and oi_change > 0:
-                    # рост OI при падении = наращивание шортов
-                    oi_score = 30
-                else:
-                    oi_score = 50
+                if price_change > 0 and oi_change > 5:    oi_score = 85
+                elif price_change > 0 and oi_change > 2:  oi_score = 75
+                elif price_change > 0 and oi_change > 0:  oi_score = 65
+                elif price_change > 0 and oi_change < 0:  oi_score = 45
+                elif price_change < 0 and oi_change > 0:  oi_score = 30
+                else:                                       oi_score = 50
 
                 coin["oi_change_8h"] = round(oi_change, 2)
             else:
                 coin["oi_change_8h"] = 0
-
-        except Exception as e:
-            logger.debug(f"OI error {symbol}: {e}")
+        except Exception:
             coin["oi_change_8h"] = 0
 
         try:
-            # Funding rate
             funding = bc.get_funding_rate(symbol)
             if funding is not None:
-                funding_pct = funding * 100
-
-                if -0.01 <= funding_pct <= 0.05:
-                    # Нормальный — нейтрально или чуть позитивно для лонгов
-                    funding_score = 70
-                elif 0.05 < funding_pct <= 0.1:
-                    # Умеренно перегрет
-                    funding_score = 50
-                elif funding_pct > 0.1:
-                    # Перегрет — осторожно с лонгами
-                    funding_score = 25
-                elif funding_pct < -0.01:
-                    # Отрицательный — хорошо для лонгов
-                    funding_score = 80
-
-                coin["funding_rate"] = round(funding_pct, 4)
+                fp = funding * 100
+                coin["funding_rate"] = round(fp, 4)
+                if fp < -0.01:            funding_score = 80
+                elif fp <= 0.05:          funding_score = 70
+                elif fp <= 0.1:           funding_score = 50
+                else:                     funding_score = 25
             else:
                 coin["funding_rate"] = 0
-                funding_score = 50
-
-        except Exception as e:
-            logger.debug(f"Funding error {symbol}: {e}")
+        except Exception:
             coin["funding_rate"] = 0
 
-        coin["oi_score"] = oi_score
-        coin["funding_score"] = funding_score
-        coin["oi_funding_score"] = round((oi_score * 0.6 + funding_score * 0.4), 2)
-
+        coin["oi_score"]       = oi_score
+        coin["funding_score"]  = funding_score
+        coin["oi_funding_score"] = round(oi_score * 0.6 + funding_score * 0.4, 2)
         scored.append(coin)
-        time.sleep(0.1)   # не спамим API
+        time.sleep(0.1)
 
-    # Финальный рейтинг
+    # Финальный watchlist score — теперь включает market_score
     for coin in scored:
         coin["watchlist_score"] = round(
-            coin["momentum_score"] * 0.5 + coin["oi_funding_score"] * 0.5, 2
+            coin["momentum_score"]   * 0.35 +
+            coin["oi_funding_score"] * 0.35 +
+            coin.get("market_score", 50) * 0.30,
+            2
         )
 
     scored.sort(key=lambda x: x["watchlist_score"], reverse=True)
@@ -258,44 +157,85 @@ def score_oi_funding(coins: list[dict]) -> list[dict]:
     logger.info(f"[Watchlist] Active Universe ({len(active)} монет):")
     for i, c in enumerate(active, 1):
         logger.info(
-            f"  {i}. {c['symbol']:12} score={c['watchlist_score']:5.1f} "
-            f"24h={c['change_24h']:+.1f}% RS={c['rs_vs_btc']:.1f}x "
-            f"OI={c['oi_change_8h']:+.1f}% funding={c['funding_rate']:.4f}%"
+            f"  {i}. {c['symbol']:16} "
+            f"wl={c['watchlist_score']:5.1f} "
+            f"mkt={c.get('market_score', 0):5.1f} "
+            f"24h={c['change_24h']:+.1f}% "
+            f"7d={c.get('return_7d', 0):+.1f}% "
+            f"RS7d={c.get('rs_7d', 0):+.1f}x "
+            f"OI={c['oi_change_8h']:+.1f}%"
         )
 
     return active
 
 
-# ─────────────────────────────────────────
-# ГЛАВНАЯ ФУНКЦИЯ
-# ─────────────────────────────────────────
-
-def build_watchlist() -> list[dict]:
+def build_watchlist(scanner_candidates: list[dict] = None) -> list[dict]:
     """
-    Полный цикл отбора:
-    300+ монет → ликвидность → momentum → OI/funding → топ-10
+    Полный цикл отбора.
+
+    scanner_candidates: топ-50 от Market Scanner
+    Если не переданы — используем базовый режим (только тикеры).
     """
     logger.info("[Watchlist] Начинаем построение Active Universe...")
 
-    # Получаем BTC изменение для RS расчёта
     tickers = bc.get_24h_tickers()
     if not tickers:
-        logger.error("[Watchlist] Не удалось получить тикеры с Binance")
+        logger.error("[Watchlist] Нет данных с Binance")
         return []
 
-    btc_ticker = next((t for t in tickers if t["symbol"] == "BTCUSDT"), None)
+    btc_ticker    = next((t for t in tickers if t["symbol"] == "BTCUSDT"), None)
     btc_change_24h = float(btc_ticker["priceChangePercent"]) if btc_ticker else 0
 
     logger.info(f"[Watchlist] BTC 24h: {btc_change_24h:+.2f}%")
-    logger.info(f"[Watchlist] Всего тикеров: {len(tickers)}")
 
-    # Шаг 1: Ликвидность
-    liquid = filter_by_liquidity(tickers)
+    if scanner_candidates:
+        # Режим с Market Scanner — обогащаем данными тикеров
+        ticker_map = {t["symbol"]: t for t in tickers}
+        coins = []
+        for c in scanner_candidates:
+            sym = c["symbol"]
+            t   = ticker_map.get(sym, {})
+            if not t:
+                continue
+            vol = float(t.get("quoteVolume", 0))
+            if vol < MIN_VOLUME_24H_USD:
+                continue
+            coins.append({
+                **c,
+                "volume_24h": vol,
+                "change_24h": float(t.get("priceChangePercent", c.get("change_24h", 0))),
+                "price":      float(t.get("lastPrice", c.get("price", 0))),
+                "high_24h":   float(t.get("highPrice", 0)),
+                "low_24h":    float(t.get("lowPrice", 0)),
+            })
+        logger.info(f"[Watchlist] Кандидатов от Scanner: {len(coins)}")
+    else:
+        # Базовый режим — фильтруем тикеры
+        coins = []
+        for t in tickers:
+            symbol = t.get("symbol", "")
+            if not symbol.endswith("USDT"):
+                continue
+            base = symbol.replace("USDT", "")
+            if any(excl in base for excl in EXCLUDED_SYMBOLS):
+                continue
+            vol = float(t.get("quoteVolume", 0))
+            if vol < MIN_VOLUME_24H_USD:
+                continue
+            coins.append({
+                "symbol":     symbol,
+                "price":      float(t.get("lastPrice", 0)),
+                "change_24h": float(t.get("priceChangePercent", 0)),
+                "volume_24h": vol,
+                "high_24h":   float(t.get("highPrice", 0)),
+                "low_24h":    float(t.get("lowPrice", 0)),
+                "market_score": 50,
+                "trend_score":  50,
+                "rs_7d":        0,
+                "return_7d":    0,
+            })
+        logger.info(f"[Watchlist] Базовый режим: {len(coins)} монет")
 
-    # Шаг 2: Momentum
-    momentum_top = score_momentum(liquid, btc_change_24h)
-
-    # Шаг 3: OI + Funding
-    active_universe = score_oi_funding(momentum_top)
-
+    momentum_top     = score_momentum(coins, btc_change_24h)
+    active_universe  = score_oi_funding(momentum_top)
     return active_universe
