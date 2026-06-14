@@ -12,6 +12,55 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import binance_client as bc
+import requests
+
+def get_klines_history(symbol: str, interval: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """Загружает исторические данные по частям (макс 1500 свечей за раз)."""
+    start_ts = int(pd.Timestamp(start_date).timestamp() * 1000)
+    end_ts   = int(pd.Timestamp(end_date).timestamp() * 1000)
+    
+    all_data = []
+    current_ts = start_ts
+    
+    while current_ts < end_ts:
+        try:
+            r = requests.get(
+                "https://fapi.binance.com/fapi/v1/klines",
+                params={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "startTime": current_ts,
+                    "endTime": end_ts,
+                    "limit": 1500
+                },
+                timeout=15
+            )
+            if r.status_code != 200:
+                break
+            data = r.json()
+            if not data:
+                break
+            all_data.extend(data)
+            current_ts = data[-1][0] + 1
+            if len(data) < 1500:
+                break
+            time.sleep(0.1)
+        except Exception as e:
+            break
+    
+    if not all_data:
+        return None
+    
+    df = pd.DataFrame(all_data, columns=[
+        'timestamp','open','high','low','close','volume',
+        'close_time','quote_volume','trades',
+        'taker_buy_base','taker_buy_quote','ignore'
+    ])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    for col in ['open','high','low','close','volume']:
+        df[col] = df[col].astype(float)
+    df.set_index('timestamp', inplace=True)
+    return df
 
 SYMBOLS_TOP10 = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -296,17 +345,14 @@ def _run_symbols(symbols, label):
     print(f"\n▶ {label}:")
     for symbol in symbols:
         print(f"  {symbol}...", end=" ", flush=True)
-        df = bc.get_klines(symbol, "1h", limit=CANDLE_LIMIT)
+        df = get_klines_history(symbol, "1h", START_DATE, END_DATE)
         if df is None or len(df) < 200:
             print("❌ нет данных"); continue
-        df = df[(df.index >= pd.Timestamp(START_DATE)) & (df.index <= pd.Timestamp(END_DATE))]
-        if len(df) < 200:
-            print("❌ мало данных"); continue
         trades, eq = backtest_symbol(symbol, df)
         all_trades.extend(trades)
         equity.extend(eq[1:])
         print(f"✅ {len(trades)} сделок")
-        time.sleep(0.2)
+        time.sleep(0.3)
     return all_trades, equity
 
 
