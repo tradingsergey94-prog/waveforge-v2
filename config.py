@@ -49,6 +49,7 @@ TP2_ATR_MULT = 3.5
 # === TIMING ===
 SCAN_INTERVAL_MINUTES  = 30
 WATCHLIST_UPDATE_HOURS = 4
+SCANNER_INTERVAL_HOURS = 6    # обновление Market Scanner каждые 6 часов
 
 # === SYSTEM ===
 SYSTEM_VERSION = "v2.1"
