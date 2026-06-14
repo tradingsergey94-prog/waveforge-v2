@@ -280,3 +280,59 @@ def scan_all_coins() -> list[dict]:
         )
 
     return top
+
+
+def scan_with_delta() -> list[dict]:
+    """
+    Запускает скан и добавляет ΔScore к каждой монете.
+    ΔScore = market_score_now - market_score_6h_ago
+
+    Монеты сортируются по комбинации:
+    - Market Score (абсолютная сила)
+    - ΔScore (набирающие силу)
+    """
+    # Получаем дельты ДО нового скана
+    deltas = db.get_delta_scores(hours_ago=6)
+
+    # Запускаем скан
+    candidates = scan_all_coins()
+
+    if not candidates:
+        return []
+
+    # Сохраняем текущие результаты
+    db.save_scanner_results(candidates)
+
+    # Добавляем ΔScore к каждой монете
+    for coin in candidates:
+        symbol = coin["symbol"]
+        delta  = deltas.get(symbol, 0)
+        coin["delta_score"] = delta
+
+        # Комбинированный рейтинг: 70% абсолютный + 30% динамика
+        coin["combined_score"] = round(
+            coin["market_score"] * 0.70 +
+            max(0, delta) * 0.30,
+            1
+        )
+
+    # Сортируем по combined_score
+    candidates.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    # Логируем топ Improving Fastest
+    improving = sorted(
+        [c for c in candidates if c["delta_score"] > 0],
+        key=lambda x: x["delta_score"],
+        reverse=True
+    )[:5]
+
+    if improving:
+        logger.info("[Scanner] 🚀 Improving Fastest:")
+        for i, c in enumerate(improving, 1):
+            logger.info(
+                f"  {i}. {c['symbol']:16} "
+                f"ΔScore=+{c['delta_score']:.1f} "
+                f"score={c['market_score']:.1f}"
+            )
+
+    return candidates
