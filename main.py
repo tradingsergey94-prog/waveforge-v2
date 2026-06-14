@@ -326,7 +326,40 @@ async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Обновляю Watchlist...")
     update_watchlist()
 
-
+async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔬 Запускаю бэктест 2022-2024...\n"
+        "Это займёт 10-15 минут.\n"
+        "Результаты пришлю сюда автоматически."
+    )
+    def run_bt():
+        try:
+            import backtester
+            stats_top10, stats_active = backtester.run_for_telegram()
+            for s in [stats_top10, stats_active]:
+                if s.get("trades", 0) == 0:
+                    notifier.send_message(f"📊 <b>{s['label']}</b>\nНет сделок за период")
+                    continue
+                pf_color = "🟢" if s["pf"] >= 1.4 else "🟡" if s["pf"] >= 1.0 else "🔴"
+                dd_color = "🟢" if s["max_dd"] > -10 else "🟡" if s["max_dd"] > -20 else "🔴"
+                notifier.send_message(
+                    f"📊 <b>{s['label']}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Сделок: {s['trades']}\n"
+                    f"Win Rate: {s['win_rate']}%\n"
+                    f"Profit Factor: {pf_color} {s['pf']}\n"
+                    f"Max Drawdown: {dd_color} {s['max_dd']}%\n"
+                    f"Sharpe: {s['sharpe']}\n"
+                    f"Avg Win: +{s['avg_win']}%\n"
+                    f"Avg Loss: {s['avg_loss']}%\n"
+                    f"Итог ($10k): ${s['final_cap']:,.0f}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━",
+                    parse_mode="HTML"
+                )
+        except Exception as e:
+            notifier.send_message(f"❌ Ошибка бэктеста: {e}")
+    t = threading.Thread(target=run_bt, daemon=True)
+    t.start()
 async def cmd_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 2:
