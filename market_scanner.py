@@ -44,7 +44,7 @@ def calculate_trend_score(df_daily: pd.DataFrame) -> dict:
     - Структура: Higher Highs + Higher Lows
     - Наклон EMA50 (растёт или падает)
     """
-    if df_daily is None or len(df_daily) < 55:
+    if df_daily is None or len(df_daily) < 52:
         return {"score": 50, "above_ema50": None, "above_ema200": None}
 
     close = df_daily["close"]
@@ -54,12 +54,7 @@ def calculate_trend_score(df_daily: pd.DataFrame) -> dict:
 
     ema50  = ta.trend.EMAIndicator(close, window=50).ema_indicator()
     above_ema50  = price > ema50.iloc[-1]
-
-    # EMA200 только если данных достаточно
-    above_ema200 = None
-    if len(df_daily) >= 205:
-        ema200 = ta.trend.EMAIndicator(close, window=200).ema_indicator()
-        above_ema200 = price > ema200.iloc[-1]
+    above_ema200 = None   # не считаем в Scanner (нужно 200+ свечей)
 
     # Наклон EMA50 (сравниваем текущее с 5 свечами назад)
     ema50_slope = (ema50.iloc[-1] - ema50.iloc[-6]) / ema50.iloc[-6] * 100
@@ -217,14 +212,14 @@ def scan_all_coins() -> list[dict]:
         symbol = coin["symbol"]
         try:
             # Дневные свечи для Trend Score и RS 7d
-            df_daily = bc.get_klines(symbol, "1d", limit=210)
+            df_daily = bc.get_klines(symbol, "1d", limit=60)
 
             # Trend Score
             trend = calculate_trend_score(df_daily)
 
             # RS Score (7d и 1d)
             coin_returns = {"1d": coin["change_24h"]}
-            if df_daily is not None and len(df_daily) >= 8:
+            if df_daily is not None and len(df_daily) >= 8:  # 7d нужно минимум 8 свечей
                 closes = df_daily["close"].values
                 r7d = (closes[-1] - closes[-8]) / closes[-8] * 100
                 coin_returns["7d"] = round(r7d, 2)
@@ -255,7 +250,7 @@ def scan_all_coins() -> list[dict]:
                 "hl":            trend.get("hl", False),
             })
 
-            time.sleep(0.15)   # не спамим API
+            time.sleep(0.05)   # минимальная пауза
 
         except Exception as e:
             logger.debug(f"[Scanner] {symbol} ошибка: {e}")
