@@ -64,20 +64,7 @@ def run_market_scanner():
         state["last_scanner_run"]   = datetime.utcnow()
         logger.info(f"✅ Market Scanner: {len(candidates)} кандидатов")
 
-        # Отправляем топ-5 в Telegram
-        top5 = candidates[:5]
-        lines = "\n".join([
-            f"{i}. <b>{c['symbol']}</b> "
-            f"score={c.get('combined_score', c['market_score']):.0f} Δ{c.get('delta_score', 0):+.0f} "
-            f"7d={c.get('return_7d', 0):+.1f}% "
-            f"RS7d={c.get('rs_7d', 0):+.1f}x"
-            for i, c in enumerate(top5, 1)
-        ])
-        notifier.send_message(
-            f"🔭 <b>Market Scanner обновлён</b>\n\n"
-            f"Топ-5 монет по Market Score:\n{lines}\n\n"
-            f"<i>{datetime.utcnow().strftime('%H:%M UTC')} | WaveForge v2.1</i>"
-        )
+        notifier.send_scanner_update(candidates)
     else:
         logger.warning("❌ Market Scanner вернул пустой список")
 
