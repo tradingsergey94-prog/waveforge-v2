@@ -58,7 +58,7 @@ SCANNER_INTERVAL_HOURS = 24
 def run_market_scanner():
     """Запускает Market Scanner — раз в 24 часа."""
     logger.info("🔭 Запуск Market Scanner (это займёт ~3-5 минут)...")
-    candidates = market_scanner.scan_all_coins()
+    candidates = market_scanner.scan_with_delta()
     if candidates:
         state["scanner_candidates"] = candidates
         state["last_scanner_run"]   = datetime.utcnow()
@@ -68,7 +68,7 @@ def run_market_scanner():
         top5 = candidates[:5]
         lines = "\n".join([
             f"{i}. <b>{c['symbol']}</b> "
-            f"score={c['market_score']:.0f} "
+            f"score={c.get('combined_score', c['market_score']):.0f} Δ{c.get('delta_score', 0):+.0f} "
             f"7d={c.get('return_7d', 0):+.1f}% "
             f"RS7d={c.get('rs_7d', 0):+.1f}x"
             for i, c in enumerate(top5, 1)
@@ -205,7 +205,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats     — статистика сигналов\n"
         "/scan      — сканирование вручную\n"
         "/watchlist — обновить Active Universe\n"
-        "/result ID RESULT — итог сделки\n"
+        "/improving  — монеты с ростом рейтинга\n        /result ID RESULT — итог сделки\n"
         "   Пример: /result 5 TP1",
         parse_mode="HTML"
     )
@@ -274,6 +274,42 @@ async def cmd_scanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🔭 <b>Market Scanner — Топ-15</b>\n\n{lines}\n"
         f"<i>Обновлено: {ts}</i>",
+        parse_mode="HTML"
+    )
+
+
+async def cmd_improving(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Топ-10 монет с наибольшим ростом Market Score."""
+    candidates = state.get("scanner_candidates", [])
+    if not candidates:
+        await update.message.reply_text("Market Scanner ещё не запускался.")
+        return
+
+    improving = sorted(
+        [c for c in candidates if c.get("delta_score", 0) > 0],
+        key=lambda x: x.get("delta_score", 0),
+        reverse=True
+    )[:10]
+
+    if not improving:
+        await update.message.reply_text(
+            "Пока нет данных.\nΔScore появится после второго запуска Scanner (~6ч)."
+        )
+        return
+
+    lines = ""
+    for i, c in enumerate(improving, 1):
+        lines += (
+            f"{i:2}. <b>{c['symbol']}</b> "
+            f"Δ+{c['delta_score']:.1f} "
+            f"score={c['market_score']:.0f} "
+            f"7d={c.get('return_7d', 0):+.1f}%\n"
+        )
+
+    await update.message.reply_text(
+        f"🚀 <b>Improving Fastest</b>\n"
+        f"<i>Монеты с наибольшим ростом Market Score</i>\n\n"
+        f"{lines}",
         parse_mode="HTML"
     )
 
@@ -392,6 +428,7 @@ def main():
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("status",    cmd_status))
     app.add_handler(CommandHandler("scanner",   cmd_scanner))
+    app.add_handler(CommandHandler("improving", cmd_improving))
     app.add_handler(CommandHandler("stats",     cmd_stats))
     app.add_handler(CommandHandler("scan",      cmd_scan))
     app.add_handler(CommandHandler("watchlist", cmd_watchlist))
