@@ -10,6 +10,7 @@ WaveForge v2.1 — главный цикл
 import asyncio
 import logging
 import time
+import threading
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -55,18 +56,26 @@ REGIME_EMOJI = {
 SCANNER_INTERVAL_HOURS = 24
 
 
-def run_market_scanner():
-    """Запускает Market Scanner — раз в 24 часа."""
-    logger.info("🔭 Запуск Market Scanner (это займёт ~3-5 минут)...")
-    candidates = market_scanner.scan_with_delta()
-    if candidates:
-        state["scanner_candidates"] = candidates
-        state["last_scanner_run"]   = datetime.utcnow()
-        logger.info(f"✅ Market Scanner: {len(candidates)} кандидатов")
+def _run_scanner_thread():
+    """Внутренняя функция для запуска в потоке."""
+    try:
+        logger.info("🔭 Market Scanner запущен в фоне...")
+        candidates = market_scanner.scan_with_delta()
+        if candidates:
+            state["scanner_candidates"] = candidates
+            state["last_scanner_run"]   = datetime.utcnow()
+            logger.info(f"✅ Market Scanner: {len(candidates)} кандидатов")
+            notifier.send_scanner_update(candidates)
+        else:
+            logger.warning("❌ Market Scanner вернул пустой список")
+    except Exception as e:
+        logger.error(f"Market Scanner ошибка: {e}", exc_info=True)
 
-        notifier.send_scanner_update(candidates)
-    else:
-        logger.warning("❌ Market Scanner вернул пустой список")
+
+def run_market_scanner():
+    """Запускает Market Scanner в отдельном потоке — не блокирует бота."""
+    t = threading.Thread(target=_run_scanner_thread, daemon=True)
+    t.start()
 
 
 def update_watchlist():
