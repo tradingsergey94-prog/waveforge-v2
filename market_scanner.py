@@ -16,6 +16,7 @@ import pandas as pd
 import numpy as np
 import ta
 import binance_client as bc
+import database as db
 from config import EXCLUDED_SYMBOLS, MIN_VOLUME_24H_USD
 
 logger = logging.getLogger(__name__)
