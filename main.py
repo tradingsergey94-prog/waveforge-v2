@@ -462,6 +462,7 @@ def main():
     app.add_handler(CommandHandler("scan",      cmd_scan))
     app.add_handler(CommandHandler("watchlist", cmd_watchlist))
     app.add_handler(CommandHandler("result",    cmd_result))
+    app.add_handler(CommandHandler("backtest",  cmd_backtest))
 
     regime = regime_agent.get_regime()
     state["regime"] = regime
