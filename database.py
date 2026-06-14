@@ -200,3 +200,89 @@ def save_watchlist(symbols: list, regime: str):
     """, (datetime.utcnow().isoformat(), json.dumps(symbols), regime))
     conn.commit()
     conn.close()
+
+
+def save_scanner_results(candidates: list):
+    """Сохраняет результаты Market Scanner для расчёта ΔScore."""
+    if not candidates:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Создаём таблицу если нет
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS scanner_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            market_score REAL,
+            trend_score REAL,
+            rs_score REAL,
+            rs_7d REAL,
+            return_7d REAL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_scanner_symbol ON scanner_history(symbol)")
+
+    now = datetime.utcnow().isoformat()
+    for coin in candidates:
+        c.execute("""
+            INSERT INTO scanner_history
+            (created_at, symbol, market_score, trend_score, rs_score, rs_7d, return_7d)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            now,
+            coin["symbol"],
+            coin.get("market_score", 0),
+            coin.get("trend_score", 0),
+            coin.get("rs_score", 0),
+            coin.get("rs_7d", 0),
+            coin.get("return_7d", 0)
+        ))
+
+    conn.commit()
+    conn.close()
+
+
+def get_delta_scores(hours_ago: int = 6) -> dict:
+    """
+    Считает ΔScore = market_score_now - market_score_N_часов_назад.
+    Возвращает словарь {symbol: delta_score}.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        # Последние записи (текущий скан)
+        c.execute("""
+            SELECT symbol, market_score FROM scanner_history
+            WHERE created_at = (SELECT MAX(created_at) FROM scanner_history)
+        """)
+        current = {row[0]: row[1] for row in c.fetchall()}
+
+        # Записи N часов назад
+        from datetime import timedelta
+        cutoff = (datetime.utcnow() - timedelta(hours=hours_ago)).isoformat()
+        c.execute("""
+            SELECT symbol, market_score FROM scanner_history
+            WHERE created_at <= ?
+            ORDER BY created_at DESC
+        """, (cutoff,))
+        # Берём последнее значение для каждого символа до cutoff
+        previous = {}
+        for row in c.fetchall():
+            if row[0] not in previous:
+                previous[row[0]] = row[1]
+
+        # Считаем дельту
+        deltas = {}
+        for symbol, score_now in current.items():
+            if symbol in previous:
+                deltas[symbol] = round(score_now - previous[symbol], 1)
+
+        return deltas
+
+    except Exception as e:
+        return {}
+    finally:
+        conn.close()
