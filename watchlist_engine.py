@@ -211,7 +211,11 @@ def build_watchlist(scanner_candidates: list[dict] = None) -> list[dict]:
         logger.info(f"[Watchlist] Кандидатов от Scanner: {len(coins)}")
     else:
         # Базовый режим — фильтруем тикеры
-        coins = []
+        # Получаем 7d данные через klines (последние 8 дневных свечей)
+        logger.info("[Watchlist] Базовый режим — загружаем 7d данные...")
+
+        # Сначала собираем кандидатов
+        candidates_raw = []
         for t in tickers:
             symbol = t.get("symbol", "")
             if not symbol.endswith("USDT"):
@@ -222,19 +226,50 @@ def build_watchlist(scanner_candidates: list[dict] = None) -> list[dict]:
             vol = float(t.get("quoteVolume", 0))
             if vol < MIN_VOLUME_24H_USD:
                 continue
-            coins.append({
+            candidates_raw.append({
                 "symbol":     symbol,
                 "price":      float(t.get("lastPrice", 0)),
                 "change_24h": float(t.get("priceChangePercent", 0)),
                 "volume_24h": vol,
                 "high_24h":   float(t.get("highPrice", 0)),
                 "low_24h":    float(t.get("lowPrice", 0)),
+            })
+
+        # Берём топ-50 по объёму для загрузки 7d данных
+        candidates_raw.sort(key=lambda x: x["volume_24h"], reverse=True)
+
+        # Загружаем 7d данные для топ-50
+        btc_change_7d = 0
+        coins = []
+        for coin in candidates_raw[:80]:
+            symbol = coin["symbol"]
+            return_7d = 0
+            rs_7d     = 0
+            try:
+                df_daily = bc.get_klines(symbol, "1d", limit=10)
+                if df_daily is not None and len(df_daily) >= 8:
+                    closes = df_daily["close"].values
+                    return_7d = (closes[-1] - closes[-8]) / closes[-8] * 100
+                    if symbol == "BTCUSDT":
+                        btc_change_7d = return_7d
+            except Exception:
+                pass
+
+            coins.append({
+                **coin,
                 "market_score": 50,
                 "trend_score":  50,
-                "rs_7d":        0,
-                "return_7d":    0,
+                "rs_7d":        rs_7d,
+                "return_7d":    round(return_7d, 2),
             })
-        logger.info(f"[Watchlist] Базовый режим: {len(coins)} монет")
+            time.sleep(0.05)
+
+        # Считаем RS vs BTC для всех монет
+        if btc_change_7d != 0:
+            for coin in coins:
+                coin["rs_7d"] = round(coin["return_7d"] / abs(btc_change_7d), 2)
+
+        logger.info(f"[Watchlist] Базовый режим: {len(coins)} монет (с 7d данными)")
 
     momentum_top     = score_momentum(coins, btc_change_24h)
     active_universe  = score_oi_funding(momentum_top)
