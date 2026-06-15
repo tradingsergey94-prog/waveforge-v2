@@ -86,6 +86,8 @@ TP2_ATR_MULT  = 4.0
 MIN_RR        = 1.5
 VOL_MULT      = 1.3
 MAX_BARS_HOLD = 48
+MIN_SCORE     = 70      # минимальный score для входа (было 55)
+COOLDOWN_BARS = 24      # часов между сделками на одной монете
 
 RISK_PCT     = 0.01
 INITIAL_CAP  = 10000
@@ -217,13 +219,14 @@ def get_signal(df, i):
     return None, 0
 
 
-def backtest_symbol(symbol, df):
+def backtest_symbol(symbol, df, btc_df=None):
     df       = add_indicators(df)
     trades   = []
     equity   = [INITIAL_CAP]
     capital  = INITIAL_CAP
     in_trade = False
     entry_data = {}
+    last_exit_i = -999   # индекс последнего выхода (для cooldown)
 
     for i in range(55, len(df)):
         price  = float(df["close"].iloc[i])
@@ -275,9 +278,32 @@ def backtest_symbol(symbol, df):
                 })
                 equity.append(capital)
                 in_trade = False
+                last_exit_i = i
 
         if not in_trade:
+            # Cooldown: не входим если прошло меньше COOLDOWN_BARS с последнего выхода
+            if (i - last_exit_i) < COOLDOWN_BARS:
+                continue
+
             signal, score = get_signal(df, i)
+            if signal and score < MIN_SCORE:
+                signal = None   # фильтр по score
+
+            # BTC Regime фильтр
+            if signal and btc_df is not None:
+                ts = df.index[i]
+                # Находим ближайшую 4H свечу BTC
+                btc_mask = btc_df.index <= ts
+                if btc_mask.any():
+                    btc_row = btc_df[btc_mask].iloc[-1]
+                    btc_above_ema200 = btc_row["close"] > btc_row["ema200"]
+                    # LONG только если BTC выше EMA200
+                    if signal == "LONG" and not btc_above_ema200:
+                        signal = None
+                    # SHORT только если BTC ниже EMA200
+                    if signal == "SHORT" and btc_above_ema200:
+                        signal = None
+
             if signal:
                 atr   = float(df["atr"].iloc[i])
                 entry = price
@@ -339,16 +365,32 @@ def calc_stats(trades, equity, label):
     }
 
 
+def get_btc_ema200(start_date, end_date):
+    """Загружаем BTC 4H данные и считаем EMA200 — для Regime фильтра."""
+    print("  Загружаем BTC для Regime фильтра...", end=" ", flush=True)
+    df = get_klines_history("BTCUSDT", "4h", start_date, end_date)
+    if df is None or len(df) < 210:
+        print("❌")
+        return None
+    df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
+    print(f"✅ {len(df)} свечей")
+    return df[["close", "ema200"]]
+
+
 def _run_symbols(symbols, label):
     all_trades = []
     equity     = [INITIAL_CAP]
     print(f"\n▶ {label}:")
+
+    # Загружаем BTC Regime один раз для всех символов
+    btc_df = get_btc_ema200(START_DATE, END_DATE)
+
     for symbol in symbols:
         print(f"  {symbol}...", end=" ", flush=True)
         df = get_klines_history(symbol, "1h", START_DATE, END_DATE)
         if df is None or len(df) < 200:
             print("❌ нет данных"); continue
-        trades, eq = backtest_symbol(symbol, df)
+        trades, eq = backtest_symbol(symbol, df, btc_df=btc_df)
         all_trades.extend(trades)
         equity.extend(eq[1:])
         print(f"✅ {len(trades)} сделок")
@@ -417,6 +459,7 @@ def run_for_telegram():
     """Запускает бэктест и возвращает статистику для Telegram."""
     trades_top10,  eq_top10  = _run_symbols(SYMBOLS_TOP10,  "Топ-10 по объёму")
     trades_active, eq_active = _run_symbols(SYMBOLS_ACTIVE, "Active Universe")
+    # btc_df загружается внутри _run_symbols
     return (
         calc_stats(trades_top10,  eq_top10,  "Топ-10 по объёму"),
         calc_stats(trades_active, eq_active, "Active Universe")
