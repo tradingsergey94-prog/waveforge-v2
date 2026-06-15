@@ -88,6 +88,7 @@ VOL_MULT      = 1.3
 MAX_BARS_HOLD = 48
 MIN_SCORE     = 70      # минимальный score для входа (было 55)
 COOLDOWN_BARS = 24      # часов между сделками на одной монете
+MIN_ADX       = 22      # минимальный ADX для входа (фильтр боковика)
 
 RISK_PCT     = 0.01
 INITIAL_CAP  = 10000
@@ -151,6 +152,29 @@ def calc_supertrend(high, low, close, period=ST_PERIOD, mult=ST_MULTIPLIER):
     return pd.Series(direction, index=close.index), atr
 
 
+def calc_adx(high, low, close, period=14):
+    """ADX — сила тренда. >25 = сильный тренд, <20 = боковик."""
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low  - close.shift()).abs()
+    ], axis=1).max(axis=1)
+
+    up_move   = high.diff()
+    down_move = -low.diff()
+
+    plus_dm  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    atr14     = tr.ewm(com=period-1, adjust=False).mean()
+    plus_di   = 100 * plus_dm.ewm(com=period-1, adjust=False).mean() / atr14
+    minus_di  = 100 * minus_dm.ewm(com=period-1, adjust=False).mean() / atr14
+
+    dx  = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1)
+    adx = dx.ewm(com=period-1, adjust=False).mean()
+    return adx, plus_di, minus_di
+
+
 def add_indicators(df):
     df = df.copy()
     df["rsi"]     = calc_rsi(df["close"], RSI_PERIOD)
@@ -158,6 +182,7 @@ def add_indicators(df):
     df["ema50"]   = calc_ema(df["close"], EMA50_PERIOD)
     df["vol_avg"] = df["volume"].rolling(20).mean()
     df["st_bull"], df["atr"] = calc_supertrend(df["high"], df["low"], df["close"])
+    df["adx"], df["di_plus"], df["di_minus"] = calc_adx(df["high"], df["low"], df["close"])
     return df
 
 
@@ -178,7 +203,15 @@ def get_signal(df, i):
     vol     = row["volume"]
     vol_avg = row["vol_avg"]
 
+    adx      = row.get("adx", 0)
+    di_plus  = row.get("di_plus", 0)
+    di_minus = row.get("di_minus", 0)
+
     if pd.isna(rsi) or pd.isna(ema21) or pd.isna(atr) or atr == 0:
+        return None, 0
+
+    # ADX фильтр — не торгуем боковик
+    if pd.isna(adx) or adx < MIN_ADX:
         return None, 0
 
     st_turned_bull = bool(st_bull) and not bool(st_prev)
@@ -191,6 +224,9 @@ def get_signal(df, i):
     hl_check = len(lows_20) >= 20 and float(min(lows_20[10:])) > float(min(lows_20[:10])) * 0.998
     lh_check = len(highs_20) >= 20 and float(max(highs_20[10:])) < float(max(highs_20[:10])) * 1.002
 
+    # ADX бонус за силу тренда
+    adx_bonus = 10 if adx > 30 else 5 if adx > 25 else 0
+
     long_score = 0
     if st_turned_bull:              long_score += 35
     elif bool(st_bull):             long_score += 20
@@ -200,6 +236,7 @@ def get_signal(df, i):
     elif price > ema21:             long_score += 10
     if hl_check: long_score += 15
     if vol_ok:   long_score += 10
+    if di_plus > di_minus: long_score += adx_bonus  # DI+ > DI- = бычий тренд
 
     short_score = 0
     if st_turned_bear:              short_score += 35
@@ -210,6 +247,7 @@ def get_signal(df, i):
     elif price < ema21:             short_score += 10
     if lh_check: short_score += 15
     if vol_ok:   short_score += 10
+    if di_minus > di_plus: short_score += adx_bonus  # DI- > DI+ = медвежий тренд
 
     if long_score >= 55 and bool(st_bull) and rsi < RSI_MAX and long_score >= short_score:
         return "LONG", long_score
