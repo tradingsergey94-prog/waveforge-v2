@@ -4,7 +4,7 @@ load_dotenv()
 
 # === TELEGRAM ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_CHAT_IDS = [x.strip() for x in os.getenv("TELEGRAM_CHAT_ID", "").split(",") if x.strip()]
 
 # === ANTHROPIC ===
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
