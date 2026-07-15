@@ -6,7 +6,7 @@ Notifier — Telegram уведомления WaveForge v2.2
 import requests
 import logging
 from datetime import datetime
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
 
 logger = logging.getLogger(__name__)
 
