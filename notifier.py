@@ -47,21 +47,24 @@ def _stars(score: float) -> str:
 
 
 def send_message(text: str, parse_mode: str = "HTML") -> bool:
-    try:
-        r = requests.post(
-            f"{BASE_URL}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": parse_mode,
-                "disable_web_page_preview": True
-            },
-            timeout=10
-        )
-        return r.status_code == 200
-    except Exception as e:
-        logger.error(f"Telegram error: {e}")
-        return False
+    ok = True
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            r = requests.post(
+                f"{BASE_URL}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "disable_web_page_preview": True
+                },
+                timeout=10
+            )
+            ok = ok and r.status_code == 200
+        except Exception as e:
+            logger.error(f"Telegram error ({chat_id}): {e}")
+            ok = False
+    return ok
 
 
 def format_signal_message(decision: dict, explanation: str, signal_id: int) -> str:
